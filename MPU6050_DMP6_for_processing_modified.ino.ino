@@ -141,7 +141,7 @@ float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gra
 
 // packet structure for InvenSense teapot demo
 uint8_t teapotPacket[14] = { '$', 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, '\r', '\n' };
-uint8_t accelPacket[14] = { '$', 0x02, 0,0, 0,0 ,0,0, 0,0, 0x00, 0x00, '\r', '\n' };
+uint8_t accelPacket[18] = { '$', 0x02, 0,0, 0,0 ,0,0, 0,0, 0,0,0,0,0x00, 0x00, '\r', '\n' };
 int16_t ax, ay, az,gx, gy, gz; //for testing getMotion6
 
 
@@ -344,10 +344,16 @@ void loop() {
               int accelXByte2 = (ax & 0xFFFF00) >> 16;
               int accelXByte1 = (ax & 0xFF00) >> 8;
               int accelXByte0 = ax & 0xFF;
+              
               int accelYByte3= (ay & 0xFFFFFF00) >> 24;
               int accelYByte2 = (ay & 0xFFFF00) >> 16;
               int accelYByte1 = (ay & 0xFF00) >> 8;
               int accelYByte0 = ay & 0xFF;
+
+              int accelZByte3= (az & 0xFFFFFF00) >> 24;
+              int accelZByte2 = (az & 0xFFFF00) >> 16;
+              int accelZByte1 = (az & 0xFF00) >> 8;
+              int accelZByte0 = az & 0xFF;
 //            Serial.print("areal\t");
 //            Serial.print(aa.x);
 //            Serial.print("\t");
@@ -368,10 +374,15 @@ void loop() {
 
             accelPacket[6] = accelYByte3;
             accelPacket[7] = accelYByte2;
-            accePacket[8] = accelYByte1;
+            accelPacket[8] = accelYByte1;
             accelPacket[9] = accelYByte0;
-            Serial.write(accelPacket, 14);
-            accelPacket[11]++;
+            
+            accelPacket[10] = accelZByte3;
+            accelPacket[11] = accelZByte2;
+            accelPacket[12] = accelZByte1;
+            accelPacket[13] = accelZByte0;
+            Serial.write(accelPacket, 18);
+            accelPacket[18]++;
         #endif
 
         #ifdef OUTPUT_READABLE_WORLDACCEL
