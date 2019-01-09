@@ -105,13 +105,13 @@ MPU6050 mpu; //commented out by Gideon
 // not compensated for orientation, so +X is always +X according to the
 // sensor, just without the effects of gravity. If you want acceleration
 // compensated for orientation, us OUTPUT_READABLE_WORLDACCEL instead.
-#define OUTPUT_READABLE_REALACCEL
+//#define OUTPUT_READABLE_REALACCEL
 
 // uncomment "OUTPUT_READABLE_WORLDACCEL" if you want to see acceleration
 // components with gravity removed and adjusted for the world frame of
 // reference (yaw is relative to initial orientation, since no magnetometer
 // is present in this case). Could be quite handy in some cases.
-//#define OUTPUT_READABLE_WORLDACCEL
+#define OUTPUT_READABLE_WORLDACCEL
 
 // uncomment "OUTPUT_TEAPOT" if you want output that matches the
 // format used for the InvenSense teapot demo
@@ -201,11 +201,11 @@ void setup() {
 
     // supply your own gyro offsets here, scaled for min sensitivity
     mpu.setXGyroOffset(-1);
-    mpu.setYGyroOffset(-23);
+    mpu.setYGyroOffset(-18);
     mpu.setZGyroOffset(4);
-    mpu.setXAccelOffset(-1883);
-    mpu.setYAccelOffset(2062);
-    mpu.setZAccelOffset(1058);
+    mpu.setXAccelOffset(-2026);
+    mpu.setYAccelOffset(2080);
+    mpu.setZAccelOffset(1055);
 //    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
  
     // make sure it worked (returns 0 if so)
@@ -340,20 +340,20 @@ void loop() {
 //            Serial.print(ay);
 //            Serial.print("\t");
 //            Serial.println(az);
-              int accelXByte3= (ax & 0xFFFFFF00) >> 24;
-              int accelXByte2 = (ax & 0xFFFF00) >> 16;
-              int accelXByte1 = (ax & 0xFF00) >> 8;
-              int accelXByte0 = ax & 0xFF;
+              int accelXByte3= (aa.x & 0xFFFFFF00) >> 24;
+              int accelXByte2 = (aa.x & 0xFFFF00) >> 16;
+              int accelXByte1 = (aa.x & 0xFF00) >> 8;
+              int accelXByte0 = aa.x & 0xFF;
               
-              int accelYByte3= (ay & 0xFFFFFF00) >> 24;
-              int accelYByte2 = (ay & 0xFFFF00) >> 16;
-              int accelYByte1 = (ay & 0xFF00) >> 8;
-              int accelYByte0 = ay & 0xFF;
+              int accelYByte3= (aa.y & 0xFFFFFF00) >> 24;
+              int accelYByte2 = (aa.y & 0xFFFF00) >> 16;
+              int accelYByte1 = (aa.y & 0xFF00) >> 8;
+              int accelYByte0 = aa.y & 0xFF;
 
-              int accelZByte3= (az & 0xFFFFFF00) >> 24;
-              int accelZByte2 = (az & 0xFFFF00) >> 16;
-              int accelZByte1 = (az & 0xFF00) >> 8;
-              int accelZByte0 = az & 0xFF;
+              int accelZByte3= (aa.z & 0xFFFFFF00) >> 24;
+              int accelZByte2 = (aa.z & 0xFFFF00) >> 16;
+              int accelZByte1 = (aa.z & 0xFF00) >> 8;
+              int accelZByte0 = aa.z & 0xFF;
 //            Serial.print("areal\t");
 //            Serial.print(aa.x);
 //            Serial.print("\t");
@@ -393,25 +393,57 @@ void loop() {
             mpu.dmpGetGravity(&gravity, &q);
             mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
             mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+              
+              int accelXByte3= (aaWorld.x & 0xFFFFFF00) >> 24;
+              int accelXByte2 = (aaWorld.x & 0xFFFF00) >> 16;
+              int accelXByte1 = (aaWorld.x & 0xFF00) >> 8;
+              int accelXByte0 = aaWorld.x & 0xFF;
+              
+              int accelYByte3= (aaWorld.y & 0xFFFFFF00) >> 24;
+              int accelYByte2 = (aaWorld.y & 0xFFFF00) >> 16;
+              int accelYByte1 = (aaWorld.y & 0xFF00) >> 8;
+              int accelYByte0 = aaWorld.y & 0xFF;
+
+              int accelZByte3= (aaWorld.z & 0xFFFFFF00) >> 24;
+              int accelZByte2 = (aaWorld.z & 0xFFFF00) >> 16;
+              int accelZByte1 = (aaWorld.z & 0xFF00) >> 8;
+              int accelZByte0 = aaWorld.z & 0xFF;
+//            Serial.print("areal\t");
+//            Serial.print(aa.x);
+//            Serial.print("\t");
+//            Serial.print(aa.y);
+//            Serial.print("\t");
+//            Serial.println(aa.z);
+//
+//            int accelXByte3= (aa.z & 0xFFFFFF00) >> 24;
+//            int accelXByte2 = (aa.z & 0xFFFF00) >> 16;
+//            int accelXByte1 = (aa.z & 0xFF00) >> 8;
+//            int accelXByte0 = aa.z & 0xFF;
+
+
+            accelPacket[2] = accelXByte3;
+            accelPacket[3] = accelXByte2;
+            accelPacket[4] = accelXByte1;
+            accelPacket[5] = accelXByte0;
+
+            accelPacket[6] = accelYByte3;
+            accelPacket[7] = accelYByte2;
+            accelPacket[8] = accelYByte1;
+            accelPacket[9] = accelYByte0;
             
+            accelPacket[10] = accelZByte3;
+            accelPacket[11] = accelZByte2;
+            accelPacket[12] = accelZByte1;
+            accelPacket[13] = accelZByte0;
+            Serial.write(accelPacket, 18);
+            accelPacket[18]++;
 //            Serial.print("aworld\t");
 //            Serial.print(aaWorld.x);
 //            Serial.print("\t");
 //            Serial.print(aaWorld.y);
 //            Serial.print("\t");
 //            Serial.println(aaWorld.z);
-            accelPacket[2] = aaWorld.x;
-            int accelXByte3= (aaWorld.x & 0xFFFFFF00) >> 24;
-            int accelXByte2 = (aaWorld.x & 0xFFFF00) >> 16;
-            int accelXByte1 = (aaWorld.x & 0xFF00) >> 8;
-            int accelXByte0 = aaWorld.x & 0xFF;
-            accelPacket[2] = accelXByte3;
-            accelPacket[3] = accelXByte2;
-            accelPacket[4] = accelXByte1;
-            accelPacket[5] = accelXByte0;
-            Serial.write(accelPacket, 14);
 //            Serial.write(accelPacket, 14);
-            accelPacket[11]++;
         #endif
     
         #ifdef OUTPUT_TEAPOT
