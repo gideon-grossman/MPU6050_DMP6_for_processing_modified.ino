@@ -135,14 +135,27 @@ Quaternion q;           // [w, x, y, z]         quaternion container
 VectorInt16 aa;         // [x, y, z]            accel sensor measurements
 VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
 VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
+VectorInt16 aaWorldPostOffset; // [x, y, z]
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+int stationary_accel_threshold = 10;
+#define SIZE_OF_DYNAMIC_OFFSET_ARRAY 100
+int32_t dynamic_offset_array[SIZE_OF_DYNAMIC_OFFSET_ARRAY];
+int16_t dynamic_offset_array_filling_counter = 0;
+VectorInt16 aaWorldOffsets;
+int32_t dynamic_offset_sum = 0;
 
 // packet structure for InvenSense teapot demo
 uint8_t teapotPacket[14] = { '$', 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, '\r', '\n' };
 uint8_t accelPacket[18] = { '$', 0x02, 0,0, 0,0 ,0,0, 0,0, 0,0,0,0,0x00, 0x00, '\r', '\n' };
 int16_t ax, ay, az,gx, gy, gz; //for testing getMotion6
+void ResetOffsetCalculator();
+void ShiftArrayForward(uint16_t arr[], uint16_t array_size);
+int32_t AverageArray(int32_t arr[], uint16_t elements_to_average);
+boolean SettlingTimeElapsed();
+#define INITIAL_SETTLING_TIME 10000
+
 
 
 // ================================================================
@@ -421,35 +434,40 @@ void loop() {
 //            int accelXByte0 = aa.z & 0xFF;
 
 
-            accelPacket[2] = accelXByte3;
-            accelPacket[3] = accelXByte2;
-            accelPacket[4] = accelXByte1;
-            accelPacket[5] = accelXByte0;
-
-            accelPacket[6] = accelYByte3;
-            accelPacket[7] = accelYByte2;
-            accelPacket[8] = accelYByte1;
-            accelPacket[9] = accelYByte0;
-            
-            accelPacket[10] = accelZByte3;
-            accelPacket[11] = accelZByte2;
-            accelPacket[12] = accelZByte1;
-            accelPacket[13] = accelZByte0;
-            Serial.write(accelPacket, 18);
+//            accelPacket[2] = accelXByte3;
+//            accelPacket[3] = accelXByte2;
+//            accelPacket[4] = accelXByte1;
+//            accelPacket[5] = accelXByte0;
+//
+//            accelPacket[6] = accelYByte3;
+//            accelPacket[7] = accelYByte2;
+//            accelPacket[8] = accelYByte1;
+//            accelPacket[9] = accelYByte0;
+//            
+//            accelPacket[10] = accelZByte3;
+//            accelPacket[11] = accelZByte2;
+//            accelPacket[12] = accelZByte1;
+//            accelPacket[13] = accelZByte0;
+//            Serial.write(accelPacket, 18);
             accelPacket[18]++;
+            
 //            Serial.print("aworld\t");
 //            Serial.print(aaWorld.x);
 //            Serial.print("\t");
 //            Serial.print(aaWorld.y);
 //            Serial.print("\t");
 //            Serial.println(aaWorld.z);
+            if (SettlingTimeElapsed())
+            {
+              SendDataToOffsetFilter(aaWorld);
+            }
 //            Serial.write(accelPacket, 14);
         #endif
     
         #ifdef OUTPUT_TEAPOT
             // display quaternion values in InvenSense Teapot demo format:
             teapotPacket[2] = fifoBuffer[0];
-            teapotPacket[3] = fifoBuffer[1];
+            teapotPacket[3] = fifoBuffer[1];`
             teapotPacket[4] = fifoBuffer[4];
             teapotPacket[5] = fifoBuffer[5];
             teapotPacket[6] = fifoBuffer[8];
@@ -464,4 +482,80 @@ void loop() {
         blinkState = !blinkState;
         digitalWrite(LED_PIN, blinkState);
     }
+}
+
+void SendDataToOffsetFilter(VectorInt16 world_accel_before_offset)
+{
+  if (abs(world_accel_before_offset.x) < (stationary_accel_threshold))
+  {
+    aaWorldPostOffset.x = 0;
+    RunDynamicOffsetCalculator(world_accel_before_offset.x);
+    Serial.println(0);
+  }
+  else if (abs(world_accel_before_offset.x) >= (stationary_accel_threshold))
+  {
+      aaWorldPostOffset.x = world_accel_before_offset.x - aaWorldOffsets.x;
+      ResetOffsetCalculator();
+      Serial.println(world_accel_before_offset.x);
+//      Serial.print(" - "); Serial.print(aaWorldOffsets.x); Serial.print(" = ");
+//      Serial.println(aaWorldPostOffset.x);
+  }
+}
+
+void RunDynamicOffsetCalculator(int16_t new_val)
+{
+  ShiftArrayForward(dynamic_offset_array, SIZE_OF_DYNAMIC_OFFSET_ARRAY);
+  dynamic_offset_array[0] = new_val;
+  
+  if (dynamic_offset_array_filling_counter < SIZE_OF_DYNAMIC_OFFSET_ARRAY)
+  {
+    dynamic_offset_array_filling_counter ++;
+    aaWorldOffsets.x = AverageArray(dynamic_offset_array, dynamic_offset_array_filling_counter);
+  }
+  else if (dynamic_offset_array_filling_counter == SIZE_OF_DYNAMIC_OFFSET_ARRAY)
+  {
+    aaWorldOffsets.x = AverageArray(dynamic_offset_array, SIZE_OF_DYNAMIC_OFFSET_ARRAY);
+  }
+}
+
+void ResetOffsetCalculator()
+{
+  dynamic_offset_array_filling_counter = 0;
+  dynamic_offset_sum = 0;
+}
+
+void ShiftArrayForward(int32_t arr[], uint16_t array_size)
+{
+  for (int i = array_size - 1; i > 0; i--)
+  {
+    arr[i] = arr[i - 1];
+  }
+}
+
+int32_t AverageArray(int32_t arr[], uint16_t elements_to_average)
+{
+    for(int i = 0; i < elements_to_average; i++)
+    {
+        dynamic_offset_sum += arr[i];
+//        Serial.print("array element[");
+//        Serial.print(i);
+//        Serial.print("]: ");
+//        Serial.println(arr[i]);
+    }
+//    Serial.print("sum: ");
+//    Serial.println(dynamic_offset_sum);
+//    Serial.print("elements to average: ");
+//    Serial.println(elements_to_average);
+    int16_t offset = round(dynamic_offset_sum * 1.0 / elements_to_average);
+    dynamic_offset_sum = 0;
+    return offset;
+}
+
+boolean SettlingTimeElapsed()
+{
+  if (millis() > INITIAL_SETTLING_TIME)
+  {
+    return true;
+  }
+  return false;
 }
