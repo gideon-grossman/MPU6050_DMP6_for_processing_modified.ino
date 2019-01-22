@@ -139,9 +139,9 @@ VectorInt16 aaWorldPostOffset; // [x, y, z]
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
-int stationary_accel_threshold = 10;
+int stationary_accel_threshold = 20;
 #define SIZE_OF_DYNAMIC_OFFSET_ARRAY 100
-int32_t dynamic_offset_array[SIZE_OF_DYNAMIC_OFFSET_ARRAY];
+int16_t dynamic_offset_array[SIZE_OF_DYNAMIC_OFFSET_ARRAY];
 int16_t dynamic_offset_array_filling_counter = 0;
 VectorInt16 aaWorldOffsets;
 int32_t dynamic_offset_sum = 0;
@@ -152,9 +152,17 @@ uint8_t accelPacket[18] = { '$', 0x02, 0,0, 0,0 ,0,0, 0,0, 0,0,0,0,0x00, 0x00, '
 int16_t ax, ay, az,gx, gy, gz; //for testing getMotion6
 void ResetOffsetCalculator();
 void ShiftArrayForward(uint16_t arr[], uint16_t array_size);
-int32_t AverageArray(int32_t arr[], uint16_t elements_to_average);
+int32_t AverageArray(int16_t arr[], uint16_t elements_to_average);
 boolean SettlingTimeElapsed();
 #define INITIAL_SETTLING_TIME 10000
+#define SIZE_OF_MOVING_AVERAGE_ARRAY 3
+int16_t moving_average_array[SIZE_OF_MOVING_AVERAGE_ARRAY];
+VectorInt16 aaWorldAfterLowPassFilter;
+
+#define NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY 50
+uint8_t not_moving_count = 0;
+boolean CheckIfMoving(int16_t new_val);
+boolean is_moving = true;
 
 
 
@@ -185,7 +193,7 @@ void setup() {
     // initialize serial communication
     // (115200 chosen because it is required for Teapot Demo output, but it's
     // really up to you depending on your project)
-    Serial.begin(38400);
+    Serial.begin(115200);
     while (!Serial); // wait for Leonardo enumeration, others continue immediately
 
     // NOTE: 8MHz or slower host processors, like the Teensy @ 3.3v or Ardunio
@@ -459,7 +467,8 @@ void loop() {
 //            Serial.println(aaWorld.z);
             if (SettlingTimeElapsed())
             {
-              SendDataToOffsetFilter(aaWorld);
+              GetLowPassFilteredValue(aaWorld);
+              SendDataToOffsetFilter(aaWorldAfterLowPassFilter);
             }
 //            Serial.write(accelPacket, 14);
         #endif
@@ -486,13 +495,15 @@ void loop() {
 
 void SendDataToOffsetFilter(VectorInt16 world_accel_before_offset)
 {
-  if (abs(world_accel_before_offset.x) < (stationary_accel_threshold))
+//  Serial.print(millis());
+//  Serial.print(" -> ");
+  if (!CheckIfMoving(abs(world_accel_before_offset.x)))
   {
     aaWorldPostOffset.x = 0;
     RunDynamicOffsetCalculator(world_accel_before_offset.x);
     Serial.println(0);
   }
-  else if (abs(world_accel_before_offset.x) >= (stationary_accel_threshold))
+  else //is still moving
   {
       aaWorldPostOffset.x = world_accel_before_offset.x - aaWorldOffsets.x;
       ResetOffsetCalculator();
@@ -524,7 +535,7 @@ void ResetOffsetCalculator()
   dynamic_offset_sum = 0;
 }
 
-void ShiftArrayForward(int32_t arr[], uint16_t array_size)
+void ShiftArrayForward(int16_t arr[], uint16_t array_size)
 {
   for (int i = array_size - 1; i > 0; i--)
   {
@@ -532,7 +543,7 @@ void ShiftArrayForward(int32_t arr[], uint16_t array_size)
   }
 }
 
-int32_t AverageArray(int32_t arr[], uint16_t elements_to_average)
+int32_t AverageArray(int16_t arr[], uint16_t elements_to_average)
 {
     for(int i = 0; i < elements_to_average; i++)
     {
@@ -558,4 +569,42 @@ boolean SettlingTimeElapsed()
     return true;
   }
   return false;
+}
+
+void UpdateMovingAverageFilter(int16_t new_val)
+{
+    ShiftArrayForward(moving_average_array, SIZE_OF_MOVING_AVERAGE_ARRAY);
+    moving_average_array[0] = new_val;
+}
+
+void GetLowPassFilteredValue(VectorInt16 new_val)
+{
+    UpdateMovingAverageFilter(new_val.x);
+    aaWorldAfterLowPassFilter.x = AverageArray(moving_average_array, SIZE_OF_MOVING_AVERAGE_ARRAY);
+}
+
+
+
+boolean CheckIfMoving(int16_t new_val)
+{
+  if(new_val < stationary_accel_threshold)
+  {
+    if (not_moving_count < NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
+    {
+      not_moving_count ++;
+    }
+  }
+  else if (new_val > stationary_accel_threshold)
+  {
+    not_moving_count = 0;
+  }
+  if (not_moving_count == NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
+  {
+      is_moving = false;
+  }
+  else
+  {
+    is_moving = true;
+  }
+  return is_moving;
 }
