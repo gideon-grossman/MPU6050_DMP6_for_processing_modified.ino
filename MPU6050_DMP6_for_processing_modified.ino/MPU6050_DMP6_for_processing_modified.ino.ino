@@ -44,7 +44,6 @@ THE SOFTWARE.
 // I2Cdev and MPU6050 must be installed as libraries, or else the .cpp/.h files
 // for both classes must be in the include path of your project
 #include "I2Cdev.h"
-
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "MPU6050.h" // not necessary if using MotionApps include file
 
@@ -130,40 +129,65 @@ uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
 
+//conversion constants
+#define ADC_PER_G 16384
+float M_S_S_PER_G = 9.80665;
+
 // orientation/motion vars
 Quaternion q;           // [w, x, y, z]         quaternion container
 VectorInt16 aa;         // [x, y, z]            accel sensor measurements
 VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
 VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
 VectorInt16 aaWorldPostOffset; // [x, y, z]
+VectorFloat aaWorldPostOffsetInMetric;
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
-int stationary_accel_threshold = 20;
-#define SIZE_OF_DYNAMIC_OFFSET_ARRAY 100
-int16_t dynamic_offset_array[SIZE_OF_DYNAMIC_OFFSET_ARRAY];
-int16_t dynamic_offset_array_filling_counter = 0;
+int stationary_accel_threshold = 40;
+#define SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY 100
+int16_t dynamic_accel_offset_array[SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY];
+int16_t dynamic_accel_offset_array_filling_counter = 0;
 VectorInt16 aaWorldOffsets;
-int32_t dynamic_offset_sum = 0;
+int32_t dynamic_accel_offset_sum = 0;
 
 // packet structure for InvenSense teapot demo
 uint8_t teapotPacket[14] = { '$', 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, '\r', '\n' };
 uint8_t accelPacket[18] = { '$', 0x02, 0,0, 0,0 ,0,0, 0,0, 0,0,0,0,0x00, 0x00, '\r', '\n' };
 int16_t ax, ay, az,gx, gy, gz; //for testing getMotion6
-void ResetOffsetCalculator();
+void ResetAccelOffsetCalculator();
 void ShiftArrayForward(uint16_t arr[], uint16_t array_size);
 int32_t AverageArray(int16_t arr[], uint16_t elements_to_average);
 boolean SettlingTimeElapsed();
 #define INITIAL_SETTLING_TIME 10000
-#define SIZE_OF_MOVING_AVERAGE_ARRAY 3
+
+//moving average i.e. low pass filter
+#define SIZE_OF_MOVING_AVERAGE_ARRAY 10
 int16_t moving_average_array[SIZE_OF_MOVING_AVERAGE_ARRAY];
 VectorInt16 aaWorldAfterLowPassFilter;
 
-#define NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY 50
+//stationary detection
+#define NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY 10
 uint8_t not_moving_count = 0;
-boolean CheckIfMoving(int16_t new_val);
-boolean is_moving = true;
+boolean CheckIfAccelerating(VectorInt16 new_val);
+VectorBool is_moving(true,true,true);
 
+//velocity variables
+VectorFloat vWorld; // m/s
+float vWorldPostOffset;
+int stationary_vel_threshold = 40;
+#define SIZE_OF_VEL_DYNAMIC_OFFSET_ARRAY SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY
+float dynamic_vel_offset_array[SIZE_OF_VEL_DYNAMIC_OFFSET_ARRAY];
+int16_t dynamic_vel_offset_array_filling_counter = 0;
+VectorFloat vWorldOffsets;
+int32_t dynamic_vel_offset_sum = 0;
+void ResetVelOffsetCalculator();
+
+// Outputting data
+void PrintAccel();
+void PrintVelocity();
+
+//time keeping
+unsigned long elapsed_time = 0.01; //milliseconds
 
 
 // ================================================================
@@ -185,7 +209,7 @@ void setup() {
     // join I2C bus (I2Cdev library doesn't do this automatically)
     #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
         Wire.begin();
-        TWBR = 24; // 400kHz I2C clock (200kHz if CPU is 8MHz)
+        TWBR = 40; // 400kHz I2C clock (200kHz if CPU is 8MHz)
     #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
         Fastwire::setup(400, true);
     #endif
@@ -221,12 +245,12 @@ void setup() {
     devStatus = mpu.dmpInitialize();
 
     // supply your own gyro offsets here, scaled for min sensitivity
-    mpu.setXGyroOffset(-1);
-    mpu.setYGyroOffset(-18);
+    mpu.setXGyroOffset(-7);
+    mpu.setYGyroOffset(-20);
     mpu.setZGyroOffset(4);
-    mpu.setXAccelOffset(-2026);
-    mpu.setYAccelOffset(2080);
-    mpu.setZAccelOffset(1055);
+    mpu.setXAccelOffset(-1999);
+    mpu.setYAccelOffset(2070);
+    mpu.setZAccelOffset(1032);
 //    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
  
     // make sure it worked (returns 0 if so)
@@ -467,8 +491,12 @@ void loop() {
 //            Serial.println(aaWorld.z);
             if (SettlingTimeElapsed())
             {
+              CalculateTimeSinceLastMeasurement();
               GetLowPassFilteredValue(aaWorld);
-              SendDataToOffsetFilter(aaWorldAfterLowPassFilter);
+              SendAccelDataToOffsetFilter(aaWorldAfterLowPassFilter);
+              ConvertAccelFromADCToMetric();
+              UpdateVelocity();
+              PrintResults();
             }
 //            Serial.write(accelPacket, 14);
         #endif
@@ -493,46 +521,41 @@ void loop() {
     }
 }
 
-void SendDataToOffsetFilter(VectorInt16 world_accel_before_offset)
+void SendAccelDataToOffsetFilter(VectorInt16 world_accel_before_offset)
 {
-//  Serial.print(millis());
-//  Serial.print(" -> ");
-  if (!CheckIfMoving(abs(world_accel_before_offset.x)))
+  CheckIfAccelerating(world_accel_before_offset);
+  if (!is_moving.x)
   {
     aaWorldPostOffset.x = 0;
     RunDynamicOffsetCalculator(world_accel_before_offset.x);
-    Serial.println(0);
   }
   else //is still moving
   {
       aaWorldPostOffset.x = world_accel_before_offset.x - aaWorldOffsets.x;
-      ResetOffsetCalculator();
-      Serial.println(world_accel_before_offset.x);
-//      Serial.print(" - "); Serial.print(aaWorldOffsets.x); Serial.print(" = ");
-//      Serial.println(aaWorldPostOffset.x);
+      ResetAccelOffsetCalculator();
   }
 }
 
 void RunDynamicOffsetCalculator(int16_t new_val)
 {
-  ShiftArrayForward(dynamic_offset_array, SIZE_OF_DYNAMIC_OFFSET_ARRAY);
-  dynamic_offset_array[0] = new_val;
+  ShiftArrayForward(dynamic_accel_offset_array, SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY);
+  dynamic_accel_offset_array[0] = new_val;
   
-  if (dynamic_offset_array_filling_counter < SIZE_OF_DYNAMIC_OFFSET_ARRAY)
+  if (dynamic_accel_offset_array_filling_counter < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
   {
-    dynamic_offset_array_filling_counter ++;
-    aaWorldOffsets.x = AverageArray(dynamic_offset_array, dynamic_offset_array_filling_counter);
+    dynamic_accel_offset_array_filling_counter ++;
+    aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array, dynamic_accel_offset_array_filling_counter);
   }
-  else if (dynamic_offset_array_filling_counter == SIZE_OF_DYNAMIC_OFFSET_ARRAY)
+  else if (dynamic_accel_offset_array_filling_counter == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
   {
-    aaWorldOffsets.x = AverageArray(dynamic_offset_array, SIZE_OF_DYNAMIC_OFFSET_ARRAY);
+    aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array, SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY);
   }
 }
 
-void ResetOffsetCalculator()
+void ResetAccelOffsetCalculator()
 {
-  dynamic_offset_array_filling_counter = 0;
-  dynamic_offset_sum = 0;
+  dynamic_accel_offset_array_filling_counter = 0;
+  dynamic_accel_offset_sum = 0;
 }
 
 void ShiftArrayForward(int16_t arr[], uint16_t array_size)
@@ -547,18 +570,18 @@ int32_t AverageArray(int16_t arr[], uint16_t elements_to_average)
 {
     for(int i = 0; i < elements_to_average; i++)
     {
-        dynamic_offset_sum += arr[i];
+        dynamic_accel_offset_sum += arr[i];
 //        Serial.print("array element[");
 //        Serial.print(i);
 //        Serial.print("]: ");
 //        Serial.println(arr[i]);
     }
 //    Serial.print("sum: ");
-//    Serial.println(dynamic_offset_sum);
+//    Serial.println(dynamic_accel_offset_sum);
 //    Serial.print("elements to average: ");
 //    Serial.println(elements_to_average);
-    int16_t offset = round(dynamic_offset_sum * 1.0 / elements_to_average);
-    dynamic_offset_sum = 0;
+    int16_t offset = round(dynamic_accel_offset_sum * 1.0 / elements_to_average);
+    dynamic_accel_offset_sum = 0;
     return offset;
 }
 
@@ -585,26 +608,81 @@ void GetLowPassFilteredValue(VectorInt16 new_val)
 
 
 
-boolean CheckIfMoving(int16_t new_val)
+boolean CheckIfAccelerating(VectorInt16 new_val)
 {
-  if(new_val < stationary_accel_threshold)
+  if(abs(new_val.x) < stationary_accel_threshold)
   {
     if (not_moving_count < NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
     {
       not_moving_count ++;
     }
   }
-  else if (new_val > stationary_accel_threshold)
+  else if (abs(new_val.x) > stationary_accel_threshold)
   {
     not_moving_count = 0;
   }
   if (not_moving_count == NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
   {
-      is_moving = false;
+      is_moving.x = false;
   }
   else
   {
-    is_moving = true;
+    is_moving.x = true;
   }
-  return is_moving;
+  return is_moving.x;
+}
+
+
+void ConvertAccelFromADCToMetric()
+{
+  aaWorldPostOffsetInMetric.x  = (aaWorldPostOffset.x * 1.0 / ADC_PER_G * M_S_S_PER_G);
+}
+void UpdateVelocity()
+{
+  if (is_moving.x)
+  {
+    vWorld.x += aaWorldPostOffsetInMetric.x * elapsed_time / 100.0;
+  }
+  else
+  {
+    vWorld.x = 0;
+  }
+}
+
+void PrintVelocity()
+{
+  Serial.println(vWorld.x);
+}
+
+void PrintAccel()
+{
+//  Serial.println(aaWorldPostOffset.x);
+    Serial.print(aaWorld.x);
+    Serial.print(",");
+    Serial.print(aaWorldAfterLowPassFilter.x);
+    Serial.print(",");
+    Serial.print(aaWorldPostOffset.x);
+    Serial.print(",");
+    Serial.print(aaWorldPostOffsetInMetric.x);
+    Serial.print(",");
+}
+void CalculateTimeSinceLastMeasurement() // in milliseconds
+{
+  static unsigned long previous_time = millis();
+  unsigned long current_time = millis();
+  elapsed_time = current_time - previous_time;
+  previous_time = current_time;
+}
+
+void PrintElapsedTime()
+{
+  Serial.print(elapsed_time);
+}
+
+void PrintResults()
+{
+//  PrintElapsedTime();
+//  Serial.print(",");
+  PrintAccel();
+  PrintVelocity();
 }
