@@ -143,32 +143,33 @@ VectorFloat aaWorldPostOffsetInMetric;
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+
 int stationary_accel_threshold = 40;
 #define SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY 100
-int16_t dynamic_accel_offset_array[SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY];
-int16_t dynamic_accel_offset_array_filling_counter = 0;
+int16_t dynamic_accel_offset_array[3][SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY];
+VectorInt16 dynamic_accel_offset_array_filling_counter;
 VectorInt16 aaWorldOffsets;
-int32_t dynamic_accel_offset_sum = 0;
+int32_t dynamic_accel_offset_sum[3] = {0,0,0};
 
 // packet structure for InvenSense teapot demo
 uint8_t teapotPacket[14] = { '$', 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, '\r', '\n' };
 uint8_t accelPacket[18] = { '$', 0x02, 0,0, 0,0 ,0,0, 0,0, 0,0,0,0,0x00, 0x00, '\r', '\n' };
 int16_t ax, ay, az,gx, gy, gz; //for testing getMotion6
-void ResetAccelOffsetCalculator();
+void ResetAccelOffsetCalculator(int axis);
 void ShiftArrayForward(uint16_t arr[], uint16_t array_size);
-int32_t AverageArray(int16_t arr[], uint16_t elements_to_average);
+int32_t AverageArray(int16_t arr[], uint16_t elements_to_average, int axis);
 boolean SettlingTimeElapsed();
 #define INITIAL_SETTLING_TIME 10000
 
 //moving average i.e. low pass filter
 #define SIZE_OF_MOVING_AVERAGE_ARRAY 10
-int16_t moving_average_array[SIZE_OF_MOVING_AVERAGE_ARRAY];
+int16_t moving_average_array[3][SIZE_OF_MOVING_AVERAGE_ARRAY];
 VectorInt16 aaWorldAfterLowPassFilter;
 
 //stationary detection
 #define NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY 10
-uint8_t not_moving_count = 0;
-boolean CheckIfAccelerating(VectorInt16 new_val);
+uint8_t not_moving_count[3] = {0,0,0};
+void CheckIfAccelerating(VectorInt16 new_val);
 VectorBool is_moving(true,true,true);
 
 //velocity variables
@@ -245,12 +246,12 @@ void setup() {
     devStatus = mpu.dmpInitialize();
 
     // supply your own gyro offsets here, scaled for min sensitivity
-    mpu.setXGyroOffset(-7);
-    mpu.setYGyroOffset(-20);
+    mpu.setXGyroOffset(-8);
+    mpu.setYGyroOffset(-21);
     mpu.setZGyroOffset(4);
-    mpu.setXAccelOffset(-1999);
-    mpu.setYAccelOffset(2070);
-    mpu.setZAccelOffset(1032);
+    mpu.setXAccelOffset(-2000);
+    mpu.setYAccelOffset(2069);
+    mpu.setZAccelOffset(1025);
 //    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
  
     // make sure it worked (returns 0 if so)
@@ -527,35 +528,97 @@ void SendAccelDataToOffsetFilter(VectorInt16 world_accel_before_offset)
   if (!is_moving.x)
   {
     aaWorldPostOffset.x = 0;
-    RunDynamicOffsetCalculator(world_accel_before_offset.x);
+    RunDynamicOffsetCalculator(world_accel_before_offset.x,0);
   }
   else //is still moving
   {
       aaWorldPostOffset.x = world_accel_before_offset.x - aaWorldOffsets.x;
-      ResetAccelOffsetCalculator();
+      ResetAccelOffsetCalculator(0);
+  }
+    if (!is_moving.y)
+  {
+    aaWorldPostOffset.y = 0;
+    RunDynamicOffsetCalculator(world_accel_before_offset.y,1);
+  }
+  else //is still moving
+  {
+      aaWorldPostOffset.y = world_accel_before_offset.y - aaWorldOffsets.y;
+      ResetAccelOffsetCalculator(1);
+  }
+    if (!is_moving.z)
+  {
+    aaWorldPostOffset.z = 0;
+    RunDynamicOffsetCalculator(world_accel_before_offset.z,2);
+  }
+  else //is still moving
+  {
+      aaWorldPostOffset.z = world_accel_before_offset.z - aaWorldOffsets.z;
+      ResetAccelOffsetCalculator(2);
   }
 }
 
-void RunDynamicOffsetCalculator(int16_t new_val)
+void RunDynamicOffsetCalculator(int16_t new_val, int axis)
 {
-  ShiftArrayForward(dynamic_accel_offset_array, SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY);
-  dynamic_accel_offset_array[0] = new_val;
-  
-  if (dynamic_accel_offset_array_filling_counter < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+  ShiftArrayForward(dynamic_accel_offset_array[axis], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY);
+  dynamic_accel_offset_array[axis][0] = new_val;
+
+  if (axis == 0)
   {
-    dynamic_accel_offset_array_filling_counter ++;
-    aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array, dynamic_accel_offset_array_filling_counter);
+    if (dynamic_accel_offset_array_filling_counter.x < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+    {
+      dynamic_accel_offset_array_filling_counter.x ++;
+      aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array[0], dynamic_accel_offset_array_filling_counter.x, 0);
+    }
+    else if (dynamic_accel_offset_array_filling_counter.x == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+    {
+      aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array[0], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY, 0);
+    }
   }
-  else if (dynamic_accel_offset_array_filling_counter == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+
+  else if (axis == 1)
   {
-    aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array, SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY);
+    if (dynamic_accel_offset_array_filling_counter.y < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+    {
+      dynamic_accel_offset_array_filling_counter.y ++;
+      aaWorldOffsets.y = AverageArray(dynamic_accel_offset_array[1], dynamic_accel_offset_array_filling_counter.y, 1);
+    }
+    else if (dynamic_accel_offset_array_filling_counter.y == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+    {
+      aaWorldOffsets.y = AverageArray(dynamic_accel_offset_array[1], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY, 1);
+    }
+  }
+
+  if (axis == 2)
+  {
+    if (dynamic_accel_offset_array_filling_counter.z < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+    {
+      dynamic_accel_offset_array_filling_counter.z ++;
+      aaWorldOffsets.z = AverageArray(dynamic_accel_offset_array[2], dynamic_accel_offset_array_filling_counter.z, 2);
+    }
+    else if (dynamic_accel_offset_array_filling_counter.z == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+    {
+      aaWorldOffsets.z = AverageArray(dynamic_accel_offset_array[2], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY, 2);
+    }
   }
 }
 
-void ResetAccelOffsetCalculator()
+void ResetAccelOffsetCalculator(int axis)
 {
-  dynamic_accel_offset_array_filling_counter = 0;
-  dynamic_accel_offset_sum = 0;
+  if (axis == 0)
+  {
+  dynamic_accel_offset_array_filling_counter.x = 0;
+  dynamic_accel_offset_sum[0] = 0;
+  }
+  else if (axis == 1)
+  {
+  dynamic_accel_offset_array_filling_counter.y = 0;
+  dynamic_accel_offset_sum[1] = 0;
+  }
+  else if (axis == 2)
+  {
+  dynamic_accel_offset_array_filling_counter.z = 0;
+  dynamic_accel_offset_sum[2] = 0;
+  }
 }
 
 void ShiftArrayForward(int16_t arr[], uint16_t array_size)
@@ -566,22 +629,14 @@ void ShiftArrayForward(int16_t arr[], uint16_t array_size)
   }
 }
 
-int32_t AverageArray(int16_t arr[], uint16_t elements_to_average)
+int32_t AverageArray(int16_t arr[], uint16_t elements_to_average, int axis)
 {
     for(int i = 0; i < elements_to_average; i++)
     {
-        dynamic_accel_offset_sum += arr[i];
-//        Serial.print("array element[");
-//        Serial.print(i);
-//        Serial.print("]: ");
-//        Serial.println(arr[i]);
+        dynamic_accel_offset_sum[axis] += arr[i];
     }
-//    Serial.print("sum: ");
-//    Serial.println(dynamic_accel_offset_sum);
-//    Serial.print("elements to average: ");
-//    Serial.println(elements_to_average);
-    int16_t offset = round(dynamic_accel_offset_sum * 1.0 / elements_to_average);
-    dynamic_accel_offset_sum = 0;
+    int16_t offset = round(dynamic_accel_offset_sum[axis] * 1.0 / elements_to_average);
+    dynamic_accel_offset_sum[axis] = 0;
     return offset;
 }
 
@@ -594,34 +649,40 @@ boolean SettlingTimeElapsed()
   return false;
 }
 
-void UpdateMovingAverageFilter(int16_t new_val)
+void UpdateMovingAverageFilter(int16_t new_val, int axis)
 {
-    ShiftArrayForward(moving_average_array, SIZE_OF_MOVING_AVERAGE_ARRAY);
-    moving_average_array[0] = new_val;
+    ShiftArrayForward(moving_average_array[axis], SIZE_OF_MOVING_AVERAGE_ARRAY);
+    moving_average_array[axis][0] = new_val;
 }
 
 void GetLowPassFilteredValue(VectorInt16 new_val)
 {
-    UpdateMovingAverageFilter(new_val.x);
-    aaWorldAfterLowPassFilter.x = AverageArray(moving_average_array, SIZE_OF_MOVING_AVERAGE_ARRAY);
+    UpdateMovingAverageFilter(new_val.x,0);
+    aaWorldAfterLowPassFilter.x = AverageArray(moving_average_array[0], SIZE_OF_MOVING_AVERAGE_ARRAY, 0);
+
+    UpdateMovingAverageFilter(new_val.y,1);
+    aaWorldAfterLowPassFilter.y = AverageArray(moving_average_array[1], SIZE_OF_MOVING_AVERAGE_ARRAY, 1);
+    
+    UpdateMovingAverageFilter(new_val.z,2);
+    aaWorldAfterLowPassFilter.z = AverageArray(moving_average_array[2], SIZE_OF_MOVING_AVERAGE_ARRAY, 2);
 }
 
 
 
-boolean CheckIfAccelerating(VectorInt16 new_val)
+void CheckIfAccelerating(VectorInt16 new_val)
 {
   if(abs(new_val.x) < stationary_accel_threshold)
   {
-    if (not_moving_count < NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
+    if (not_moving_count[0] < NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
     {
-      not_moving_count ++;
+      not_moving_count[0] ++;
     }
   }
-  else if (abs(new_val.x) > stationary_accel_threshold)
+  else if (abs(new_val.x) >= stationary_accel_threshold)
   {
-    not_moving_count = 0;
+    not_moving_count[0] = 0;
   }
-  if (not_moving_count == NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
+  if (not_moving_count[0] == NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
   {
       is_moving.x = false;
   }
@@ -629,13 +690,54 @@ boolean CheckIfAccelerating(VectorInt16 new_val)
   {
     is_moving.x = true;
   }
-  return is_moving.x;
+
+  if(abs(new_val.y) < stationary_accel_threshold)
+  {
+    if (not_moving_count[1] < NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
+    {
+      not_moving_count[1] ++;
+    }
+  }
+  else if (abs(new_val.y) >= stationary_accel_threshold)
+  {
+    not_moving_count[1] = 0;
+  }
+  if (not_moving_count[1] == NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
+  {
+      is_moving.y = false;
+  }
+  else
+  {
+    is_moving.y = true;
+  }
+
+  if(abs(new_val.z) < stationary_accel_threshold)
+  {
+    if (not_moving_count[2] < NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
+    {
+      not_moving_count[2] ++;
+    }
+  }
+  else if (abs(new_val.z) >= stationary_accel_threshold)
+  {
+    not_moving_count[2] = 0;
+  }
+  if (not_moving_count[2] == NUMBER_OF_LOW_READINGS_CONSIDERED_STATIONARY)
+  {
+      is_moving.z = false;
+  }
+  else
+  {
+    is_moving.z = true;
+  }
 }
 
 
 void ConvertAccelFromADCToMetric()
 {
   aaWorldPostOffsetInMetric.x  = (aaWorldPostOffset.x * 1.0 / ADC_PER_G * M_S_S_PER_G);
+  aaWorldPostOffsetInMetric.y  = (aaWorldPostOffset.y * 1.0 / ADC_PER_G * M_S_S_PER_G);
+  aaWorldPostOffsetInMetric.z  = (aaWorldPostOffset.z * 1.0 / ADC_PER_G * M_S_S_PER_G);
 }
 void UpdateVelocity()
 {
@@ -647,24 +749,60 @@ void UpdateVelocity()
   {
     vWorld.x = 0;
   }
+  
+  if (is_moving.y)
+  {
+    vWorld.y += aaWorldPostOffsetInMetric.y * elapsed_time / 100.0;
+  }
+  else
+  {
+    vWorld.y = 0;
+  }
+  
+  if (is_moving.z)
+  {
+    vWorld.z += aaWorldPostOffsetInMetric.z * elapsed_time / 100.0;
+  }
+  else
+  {
+    vWorld.z = 0;
+  }  
 }
 
 void PrintVelocity()
 {
-  Serial.println(vWorld.x);
+  Serial.print(vWorld.x);
+  Serial.print(",");
+  Serial.print(vWorld.y);
+  Serial.print(",");
+  Serial.print(vWorld.z);
 }
 
 void PrintAccel()
 {
-//  Serial.println(aaWorldPostOffset.x);
-    Serial.print(aaWorld.x);
-    Serial.print(",");
-    Serial.print(aaWorldAfterLowPassFilter.x);
-    Serial.print(",");
-    Serial.print(aaWorldPostOffset.x);
-    Serial.print(",");
+//    Serial.print(aaWorld.x);
+//    Serial.print(",");
+//    Serial.print(aaWorldAfterLowPassFilter.x);
+//    Serial.print(",");
+//    Serial.print(aaWorldPostOffset.x);
+//    Serial.print(",");
+
     Serial.print(aaWorldPostOffsetInMetric.x);
     Serial.print(",");
+    Serial.print(aaWorldPostOffsetInMetric.y);
+    Serial.print(",");
+    Serial.print(aaWorldPostOffsetInMetric.z);
+    Serial.print(",");
+}
+
+void PrintIsAccelerating()
+{
+  Serial.print(is_moving.x);
+  Serial.print(",");
+  Serial.print(is_moving.y);
+  Serial.print(",");
+  Serial.print(is_moving.z);
+  Serial.print(",");
 }
 void CalculateTimeSinceLastMeasurement() // in milliseconds
 {
@@ -685,4 +823,6 @@ void PrintResults()
 //  Serial.print(",");
   PrintAccel();
   PrintVelocity();
+//  PrintIsAccelerating();
+  Serial.print("\r\n");
 }
