@@ -110,12 +110,13 @@ MPU6050 mpu; //commented out by Gideon
 // components with gravity removed and adjusted for the world frame of
 // reference (yaw is relative to initial orientation, since no magnetometer
 // is present in this case). Could be quite handy in some cases.
-#define OUTPUT_READABLE_WORLDACCEL
+//#define OUTPUT_READABLE_WORLDACCEL
 
 // uncomment "OUTPUT_TEAPOT" if you want output that matches the
 // format used for the InvenSense teapot demo
 //#define OUTPUT_TEAPOT
 
+#define OUTPUT_RAW_TRIPPED_ACCEL
 
 
 #define LED_PIN 13 // (Arduino is 13, Teensy is 11, Teensy++ is 6)
@@ -141,15 +142,15 @@ VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measure
 VectorInt16 aaWorldPostOffset; // [x, y, z]
 VectorFloat aaWorldPostOffsetInMetric;
 VectorFloat gravity;    // [x, y, z]            gravity vector
-float euler[3];         // [psi, theta, phi]    Euler angle container
-float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+//float euler[3];         // [psi, theta, phi]    Euler angle container
+//float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
-int stationary_accel_threshold = 40;
-#define SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY 100
-int16_t dynamic_accel_offset_array[3][SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY];
-VectorInt16 dynamic_accel_offset_array_filling_counter;
-VectorInt16 aaWorldOffsets;
-int32_t dynamic_accel_offset_sum[3] = {0,0,0};
+//int stationary_accel_threshold = 40;
+//#define SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY 100
+//int16_t dynamic_accel_offset_array[3][SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY];
+//VectorInt16 dynamic_accel_offset_array_filling_counter;
+//VectorInt16 aaWorldOffsets;
+//int32_t dynamic_accel_offset_sum[3] = {0,0,0};
 
 // packet structure for InvenSense teapot demo
 uint8_t teapotPacket[14] = { '$', 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, '\r', '\n' };
@@ -173,15 +174,15 @@ void CheckIfAccelerating(VectorInt16 new_val);
 VectorBool is_moving(true,true,true);
 
 //velocity variables
-VectorFloat vWorld; // m/s
-float vWorldPostOffset;
-int stationary_vel_threshold = 40;
-#define SIZE_OF_VEL_DYNAMIC_OFFSET_ARRAY SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY
-float dynamic_vel_offset_array[SIZE_OF_VEL_DYNAMIC_OFFSET_ARRAY];
-int16_t dynamic_vel_offset_array_filling_counter = 0;
-VectorFloat vWorldOffsets;
-int32_t dynamic_vel_offset_sum = 0;
-void ResetVelOffsetCalculator();
+//VectorFloat vWorld; // m/s
+//float vWorldPostOffset;
+//int stationary_vel_threshold = 40;
+//#define SIZE_OF_VEL_DYNAMIC_OFFSET_ARRAY SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY
+//float dynamic_vel_offset_array[SIZE_OF_VEL_DYNAMIC_OFFSET_ARRAY];
+//int16_t dynamic_vel_offset_array_filling_counter = 0;
+//VectorFloat vWorldOffsets;
+//int32_t dynamic_vel_offset_sum = 0;
+//void ResetVelOffsetCalculator();
 
 // Outputting data
 void PrintAccel();
@@ -190,7 +191,23 @@ void PrintVelocity();
 //time keeping
 unsigned long elapsed_time = 0.01; //milliseconds
 
+#define PRINT_DATA_BUFFER_SIZE 40
+VectorInt16 accel_print_buffer[PRINT_DATA_BUFFER_SIZE]; // may need to enlarge
+Quaternion q_buffer[PRINT_DATA_BUFFER_SIZE];
+unsigned long print_buffer_timer = 0;
+unsigned long start_print_buffer_timer = 0;
+#define PRINT_BUFFER_DURATION 1000 //ms
 
+#define PROCESS_DATA_SM_START_STATE 0
+#define PROCESS_DATA_SM_RUNNING_STATE 1
+#define PROCESS_DATA_SM_END_STATE 2
+int print_buffer_state = PROCESS_DATA_SM_END_STATE;
+#define ACCEL_TRIP_VALUE_M_S_S 0.5
+#define ACCEL_TRIP_VALUE ACCEL_TRIP_VALUE_M_S_S / M_S_S_PER_G * ADC_PER_G
+void ClearVectorInt16Buffer(VectorInt16 buffer[], uint16_t size_of_array);
+void UpdateVectorInt16Buffer(VectorInt16 buffer[], VectorInt16 new_val, uint16_t array_size);
+void ClearQuaternionBuffer(Quaternion buffer[], uint16_t size_of_array);
+void UpdateQuaternionBuffer(Quaternion buffer[], Quaternion new_val, uint16_t array_size);
 // ================================================================
 // ===               INTERRUPT DETECTION ROUTINE                ===
 // ================================================================
@@ -246,12 +263,12 @@ void setup() {
     devStatus = mpu.dmpInitialize();
 
     // supply your own gyro offsets here, scaled for min sensitivity
-    mpu.setXGyroOffset(-8);
-    mpu.setYGyroOffset(-21);
-    mpu.setZGyroOffset(4);
-    mpu.setXAccelOffset(-2000);
-    mpu.setYAccelOffset(2069);
-    mpu.setZAccelOffset(1025);
+    mpu.setXGyroOffset(-4);
+    mpu.setYGyroOffset(-18);
+    mpu.setZGyroOffset(5);
+    mpu.setXAccelOffset(-2012);
+    mpu.setYAccelOffset(2077);
+    mpu.setZAccelOffset(1066);
 //    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
  
     // make sure it worked (returns 0 if so)
@@ -283,6 +300,8 @@ void setup() {
 
     // configure LED for output
     pinMode(LED_PIN, OUTPUT);
+    Serial.print("trip value: \t");
+    Serial.println(ACCEL_TRIP_VALUE);
 }
 
 
@@ -431,6 +450,12 @@ void loop() {
             accelPacket[18]++;
         #endif
 
+        #ifdef OUTPUT_RAW_TRIPPED_ACCEL
+          mpu.dmpGetQuaternion(&q, fifoBuffer);
+          mpu.dmpGetAccel(&aa, fifoBuffer);
+          RunPrintBufferSM();
+        #endif
+
         #ifdef OUTPUT_READABLE_WORLDACCEL
             // display initial world-frame acceleration, adjusted to remove gravity
             // and rotated based on known orientation from quaternion
@@ -521,105 +546,105 @@ void loop() {
         digitalWrite(LED_PIN, blinkState);
     }
 }
+//
+//void SendAccelDataToOffsetFilter(VectorInt16 world_accel_before_offset)
+//{
+//  CheckIfAccelerating(world_accel_before_offset);
+//  if (!is_moving.x)
+//  {
+//    aaWorldPostOffset.x = 0;
+//    RunDynamicOffsetCalculator(world_accel_before_offset.x,0);
+//  }
+//  else //is still moving
+//  {
+//      aaWorldPostOffset.x = world_accel_before_offset.x - aaWorldOffsets.x;
+//      ResetAccelOffsetCalculator(0);
+//  }
+//    if (!is_moving.y)
+//  {
+//    aaWorldPostOffset.y = 0;
+//    RunDynamicOffsetCalculator(world_accel_before_offset.y,1);
+//  }
+//  else //is still moving
+//  {
+//      aaWorldPostOffset.y = world_accel_before_offset.y - aaWorldOffsets.y;
+//      ResetAccelOffsetCalculator(1);
+//  }
+//    if (!is_moving.z)
+//  {
+//    aaWorldPostOffset.z = 0;
+//    RunDynamicOffsetCalculator(world_accel_before_offset.z,2);
+//  }
+//  else //is still moving
+//  {
+//      aaWorldPostOffset.z = world_accel_before_offset.z - aaWorldOffsets.z;
+//      ResetAccelOffsetCalculator(2);
+//  }
+//}
 
-void SendAccelDataToOffsetFilter(VectorInt16 world_accel_before_offset)
-{
-  CheckIfAccelerating(world_accel_before_offset);
-  if (!is_moving.x)
-  {
-    aaWorldPostOffset.x = 0;
-    RunDynamicOffsetCalculator(world_accel_before_offset.x,0);
-  }
-  else //is still moving
-  {
-      aaWorldPostOffset.x = world_accel_before_offset.x - aaWorldOffsets.x;
-      ResetAccelOffsetCalculator(0);
-  }
-    if (!is_moving.y)
-  {
-    aaWorldPostOffset.y = 0;
-    RunDynamicOffsetCalculator(world_accel_before_offset.y,1);
-  }
-  else //is still moving
-  {
-      aaWorldPostOffset.y = world_accel_before_offset.y - aaWorldOffsets.y;
-      ResetAccelOffsetCalculator(1);
-  }
-    if (!is_moving.z)
-  {
-    aaWorldPostOffset.z = 0;
-    RunDynamicOffsetCalculator(world_accel_before_offset.z,2);
-  }
-  else //is still moving
-  {
-      aaWorldPostOffset.z = world_accel_before_offset.z - aaWorldOffsets.z;
-      ResetAccelOffsetCalculator(2);
-  }
-}
-
-void RunDynamicOffsetCalculator(int16_t new_val, int axis)
-{
-  ShiftArrayForward(dynamic_accel_offset_array[axis], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY);
-  dynamic_accel_offset_array[axis][0] = new_val;
-
-  if (axis == 0)
-  {
-    if (dynamic_accel_offset_array_filling_counter.x < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
-    {
-      dynamic_accel_offset_array_filling_counter.x ++;
-      aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array[0], dynamic_accel_offset_array_filling_counter.x, 0);
-    }
-    else if (dynamic_accel_offset_array_filling_counter.x == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
-    {
-      aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array[0], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY, 0);
-    }
-  }
-
-  else if (axis == 1)
-  {
-    if (dynamic_accel_offset_array_filling_counter.y < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
-    {
-      dynamic_accel_offset_array_filling_counter.y ++;
-      aaWorldOffsets.y = AverageArray(dynamic_accel_offset_array[1], dynamic_accel_offset_array_filling_counter.y, 1);
-    }
-    else if (dynamic_accel_offset_array_filling_counter.y == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
-    {
-      aaWorldOffsets.y = AverageArray(dynamic_accel_offset_array[1], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY, 1);
-    }
-  }
-
-  if (axis == 2)
-  {
-    if (dynamic_accel_offset_array_filling_counter.z < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
-    {
-      dynamic_accel_offset_array_filling_counter.z ++;
-      aaWorldOffsets.z = AverageArray(dynamic_accel_offset_array[2], dynamic_accel_offset_array_filling_counter.z, 2);
-    }
-    else if (dynamic_accel_offset_array_filling_counter.z == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
-    {
-      aaWorldOffsets.z = AverageArray(dynamic_accel_offset_array[2], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY, 2);
-    }
-  }
-}
-
-void ResetAccelOffsetCalculator(int axis)
-{
-  if (axis == 0)
-  {
-  dynamic_accel_offset_array_filling_counter.x = 0;
-  dynamic_accel_offset_sum[0] = 0;
-  }
-  else if (axis == 1)
-  {
-  dynamic_accel_offset_array_filling_counter.y = 0;
-  dynamic_accel_offset_sum[1] = 0;
-  }
-  else if (axis == 2)
-  {
-  dynamic_accel_offset_array_filling_counter.z = 0;
-  dynamic_accel_offset_sum[2] = 0;
-  }
-}
+//void RunDynamicOffsetCalculator(int16_t new_val, int axis)
+//{
+//  ShiftArrayForward(dynamic_accel_offset_array[axis], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY);
+//  dynamic_accel_offset_array[axis][0] = new_val;
+//
+//  if (axis == 0)
+//  {
+//    if (dynamic_accel_offset_array_filling_counter.x < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+//    {
+//      dynamic_accel_offset_array_filling_counter.x ++;
+//      aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array[0], dynamic_accel_offset_array_filling_counter.x, 0);
+//    }
+//    else if (dynamic_accel_offset_array_filling_counter.x == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+//    {
+//      aaWorldOffsets.x = AverageArray(dynamic_accel_offset_array[0], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY, 0);
+//    }
+//  }
+//
+//  else if (axis == 1)
+//  {
+//    if (dynamic_accel_offset_array_filling_counter.y < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+//    {
+//      dynamic_accel_offset_array_filling_counter.y ++;
+//      aaWorldOffsets.y = AverageArray(dynamic_accel_offset_array[1], dynamic_accel_offset_array_filling_counter.y, 1);
+//    }
+//    else if (dynamic_accel_offset_array_filling_counter.y == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+//    {
+//      aaWorldOffsets.y = AverageArray(dynamic_accel_offset_array[1], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY, 1);
+//    }
+//  }
+//
+//  if (axis == 2)
+//  {
+//    if (dynamic_accel_offset_array_filling_counter.z < SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+//    {
+//      dynamic_accel_offset_array_filling_counter.z ++;
+//      aaWorldOffsets.z = AverageArray(dynamic_accel_offset_array[2], dynamic_accel_offset_array_filling_counter.z, 2);
+//    }
+//    else if (dynamic_accel_offset_array_filling_counter.z == SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY)
+//    {
+//      aaWorldOffsets.z = AverageArray(dynamic_accel_offset_array[2], SIZE_OF_ACCEL_DYNAMIC_OFFSET_ARRAY, 2);
+//    }
+//  }
+//}
+//
+//void ResetAccelOffsetCalculator(int axis)
+//{
+//  if (axis == 0)
+//  {
+//  dynamic_accel_offset_array_filling_counter.x = 0;
+//  dynamic_accel_offset_sum[0] = 0;
+//  }
+//  else if (axis == 1)
+//  {
+//  dynamic_accel_offset_array_filling_counter.y = 0;
+//  dynamic_accel_offset_sum[1] = 0;
+//  }
+//  else if (axis == 2)
+//  {
+//  dynamic_accel_offset_array_filling_counter.z = 0;
+//  dynamic_accel_offset_sum[2] = 0;
+//  }
+//}
 
 void ShiftArrayForward(int16_t arr[], uint16_t array_size)
 {
@@ -629,16 +654,16 @@ void ShiftArrayForward(int16_t arr[], uint16_t array_size)
   }
 }
 
-int32_t AverageArray(int16_t arr[], uint16_t elements_to_average, int axis)
-{
-    for(int i = 0; i < elements_to_average; i++)
-    {
-        dynamic_accel_offset_sum[axis] += arr[i];
-    }
-    int16_t offset = round(dynamic_accel_offset_sum[axis] * 1.0 / elements_to_average);
-    dynamic_accel_offset_sum[axis] = 0;
-    return offset;
-}
+//int32_t AverageArray(int16_t arr[], uint16_t elements_to_average, int axis)
+//{
+//    for(int i = 0; i < elements_to_average; i++)
+//    {
+//        dynamic_accel_offset_sum[axis] += arr[i];
+//    }
+//    int16_t offset = round(dynamic_accel_offset_sum[axis] * 1.0 / elements_to_average);
+//    dynamic_accel_offset_sum[axis] = 0;
+//    return offset;
+//}
 
 boolean SettlingTimeElapsed()
 {
@@ -649,6 +674,8 @@ boolean SettlingTimeElapsed()
   return false;
 }
 
+
+/*
 void UpdateMovingAverageFilter(int16_t new_val, int axis)
 {
     ShiftArrayForward(moving_average_array[axis], SIZE_OF_MOVING_AVERAGE_ARRAY);
@@ -825,4 +852,126 @@ void PrintResults()
   PrintVelocity();
 //  PrintIsAccelerating();
   Serial.print("\r\n");
+}
+
+*/
+
+void RunPrintBufferSM()
+{
+  switch(print_buffer_state)
+  {
+    case PROCESS_DATA_SM_START_STATE :
+      start_print_buffer_timer = millis();
+      ClearVectorInt16Buffer(accel_print_buffer, PRINT_DATA_BUFFER_SIZE);
+      UpdateVectorInt16Buffer(accel_print_buffer, aa, PRINT_DATA_BUFFER_SIZE);
+      ClearQuaternionBuffer(q_buffer, PRINT_DATA_BUFFER_SIZE);
+      UpdateQuaternionBuffer(q_buffer, q, PRINT_DATA_BUFFER_SIZE);
+      print_buffer_state = PROCESS_DATA_SM_RUNNING_STATE;
+    break;
+    
+    case PROCESS_DATA_SM_RUNNING_STATE :
+      UpdateVectorInt16Buffer(accel_print_buffer, aa, PRINT_DATA_BUFFER_SIZE);
+      UpdateQuaternionBuffer(q_buffer, q, PRINT_DATA_BUFFER_SIZE);
+      print_buffer_timer = millis();
+      if (print_buffer_timer > start_print_buffer_timer + PRINT_BUFFER_DURATION)
+      {
+        ProcessAccelBuffer(accel_print_buffer, q_buffer, PRINT_DATA_BUFFER_SIZE);
+        print_buffer_state = PROCESS_DATA_SM_END_STATE ;
+      }
+    break;
+    
+    case PROCESS_DATA_SM_END_STATE:
+        Serial.print(aa.x); Serial.print(",");
+        Serial.print(aa.y); Serial.print(",");
+        Serial.print(aa.z); Serial.print(",");
+        if (abs(aa.x) > ACCEL_TRIP_VALUE | abs(aa.y) > ACCEL_TRIP_VALUE  | abs(aa.z) > ACCEL_TRIP_VALUE )
+        {
+          Serial.println("tripped\r\n");
+//          print_buffer_state = PROCESS_DATA_SM_START_STATE;
+        }
+        else { Serial.println("nope\r\n");}
+    /*Process buffer*/
+      break;
+  }
+}
+
+void ProcessAccelBuffer(VectorInt16 raw_accel_buffer[], Quaternion q_buffer[], uint16_t array_size)
+{
+//  PrintVectorInt16Buffer(raw_accel_buffer, PRINT_DATA_BUFFER_SIZE);
+  for (int i = 0; i < array_size; i++)
+  {
+    mpu.dmpGetGravity(&gravity, &(q_buffer[i]));
+    mpu.dmpGetLinearAccel(&aaReal, &(raw_accel_buffer[i]), &gravity);
+    mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &(q_buffer[i]));
+    Serial.print(aaWorld.x); Serial.print(",");
+    Serial.print(aaWorld.y); Serial.print(",");
+    Serial.print(aaWorld.z); Serial.print(",");
+    Serial.print("\r\n");
+  }
+}
+void UpdateVectorInt16Buffer(VectorInt16 buffer[], VectorInt16 new_val, uint16_t array_size)
+{
+  ShiftVectorInt16ArrayForward(buffer, array_size);
+  buffer[0] = new_val;
+}
+
+void UpdateQuaternionBuffer(Quaternion buffer[], Quaternion new_val, uint16_t array_size)
+{
+  ShiftQuaternionArrayForward(buffer, array_size);
+  buffer[0] = new_val;
+}
+
+void ShiftVectorInt16ArrayForward(VectorInt16 arr[], uint16_t array_size)
+{
+  for (int i = array_size - 1; i > 0; i--)
+  {
+    arr[i].x = arr[i - 1].x;
+    arr[i].y = arr[i - 1].y;
+    arr[i].z = arr[i - 1].z;
+  }
+}
+
+void ShiftQuaternionArrayForward(Quaternion arr[], uint16_t array_size)
+{
+  for (int i = array_size - 1; i > 0; i--)
+  {
+    arr[i].w = arr[i - 1].w;
+    arr[i].x = arr[i - 1].x;
+    arr[i].y = arr[i - 1].y;
+    arr[i].z = arr[i - 1].z;
+  }
+}
+
+void PrintVectorInt16Buffer(VectorInt16 buffer[], uint16_t size_of_array)
+{
+    for (int i = 0; i < size_of_array; i++)
+    {
+        Serial.print(buffer[i].x);
+        Serial.print(",");
+        Serial.print(buffer[i].y);
+        Serial.print(",");
+        Serial.print(buffer[i].z);
+        Serial.print("\r\n");
+    }
+}
+
+void ClearVectorInt16Buffer(VectorInt16 buffer[], uint16_t size_of_array)
+{
+    for (int i = 0; i < size_of_array; i++)
+    {
+        buffer[i].x = 0;
+        buffer[i].y = 0;
+        buffer[i].z = 0;
+    }
+}
+
+void ClearQuaternionBuffer(Quaternion buffer[], uint16_t size_of_array)
+{
+    for (int i = 0; i < size_of_array; i++)
+    {
+        buffer[i].w = 0;
+        buffer[i].x = 0;
+        buffer[i].y = 0;
+        buffer[i].z = 0;
+    }
 }
