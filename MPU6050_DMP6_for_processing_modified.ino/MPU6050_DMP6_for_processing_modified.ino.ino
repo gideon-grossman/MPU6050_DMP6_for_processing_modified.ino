@@ -110,13 +110,13 @@ MPU6050 mpu; //commented out by Gideon
 // components with gravity removed and adjusted for the world frame of
 // reference (yaw is relative to initial orientation, since no magnetometer
 // is present in this case). Could be quite handy in some cases.
-//#define OUTPUT_READABLE_WORLDACCEL
+#define OUTPUT_READABLE_WORLDACCEL
 
 // uncomment "OUTPUT_TEAPOT" if you want output that matches the
 // format used for the InvenSense teapot demo
 //#define OUTPUT_TEAPOT
 
-#define OUTPUT_RAW_TRIPPED_ACCEL
+//#define OUTPUT_RAW_TRIPPED_ACCEL
 
 
 #define LED_PIN 13 // (Arduino is 13, Teensy is 11, Teensy++ is 6)
@@ -136,6 +136,7 @@ float M_S_S_PER_G = 9.80665;
 
 // orientation/motion vars
 Quaternion q;           // [w, x, y, z]         quaternion container
+VectorInt16 gyro;          // [x, y, z]
 VectorInt16 aa;         // [x, y, z]            accel sensor measurements
 VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
 VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
@@ -191,12 +192,13 @@ void PrintVelocity();
 //time keeping
 unsigned long elapsed_time = 0.01; //milliseconds
 
-#define PRINT_DATA_BUFFER_SIZE 40
+
+
+#define PRINT_DATA_BUFFER_SIZE 100
 VectorInt16 accel_print_buffer[PRINT_DATA_BUFFER_SIZE]; // may need to enlarge
-Quaternion q_buffer[PRINT_DATA_BUFFER_SIZE];
 unsigned long print_buffer_timer = 0;
 unsigned long start_print_buffer_timer = 0;
-#define PRINT_BUFFER_DURATION 1000 //ms
+#define PRINT_BUFFER_DURATION 450 //ms
 
 #define PROCESS_DATA_SM_START_STATE 0
 #define PROCESS_DATA_SM_RUNNING_STATE 1
@@ -208,7 +210,9 @@ void ClearVectorInt16Buffer(VectorInt16 buffer[], uint16_t size_of_array);
 void UpdateVectorInt16Buffer(VectorInt16 buffer[], VectorInt16 new_val, uint16_t array_size);
 void ClearQuaternionBuffer(Quaternion buffer[], uint16_t size_of_array);
 void UpdateQuaternionBuffer(Quaternion buffer[], Quaternion new_val, uint16_t array_size);
-// ================================================================
+#define INTERVALS_BUFFER_LENGTH PRINT_DATA_BUFFER_SIZE
+unsigned long intervals[INTERVALS_BUFFER_LENGTH];
+// ===================e=============================================
 // ===               INTERRUPT DETECTION ROUTINE                ===
 // ================================================================
 
@@ -244,6 +248,7 @@ void setup() {
     // 38400 or slower in these cases, or use some kind of external separate
     // crystal solution for the UART timer.
 
+    
     // initialize device
     Serial.println(F("Initializing I2C devices..."));
     mpu.initialize();
@@ -264,12 +269,11 @@ void setup() {
 
     // supply your own gyro offsets here, scaled for min sensitivity
     mpu.setXGyroOffset(-4);
-    mpu.setYGyroOffset(-18);
-    mpu.setZGyroOffset(5);
-    mpu.setXAccelOffset(-2012);
-    mpu.setYAccelOffset(2077);
-    mpu.setZAccelOffset(1066);
-//    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
+    mpu.setYGyroOffset(-19);
+    mpu.setZGyroOffset(8);
+    mpu.setXAccelOffset(-2014);
+    mpu.setYAccelOffset(2092);
+    mpu.setZAccelOffset(1044);
  
     // make sure it worked (returns 0 if so)
     if (devStatus == 0) {
@@ -288,6 +292,7 @@ void setup() {
 
         // get expected DMP packet size for later comparison
         packetSize = mpu.dmpGetFIFOPacketSize();
+        Serial.print("packet size:\t"); Serial.println(packetSize);
     } else {
         // ERROR!
         // 1 = initial memory load failed
@@ -311,6 +316,9 @@ void setup() {
 // ================================================================
 
 void loop() {
+  delay(15);
+
+  /*
     // if programming failed, don't try to do anything
     if (!dmpReady) return;
 
@@ -353,6 +361,9 @@ void loop() {
         // (this lets us immediately read more without waiting for an interrupt)
         fifoCount -= packetSize;
 
+*/
+
+        mpu.getFIFOBytes(fifoBuffer, packetSize);
         #ifdef OUTPUT_READABLE_QUATERNION
             // display quaternion values in easy matrix form: w x y z
             mpu.dmpGetQuaternion(&q, fifoBuffer);
@@ -451,19 +462,58 @@ void loop() {
         #endif
 
         #ifdef OUTPUT_RAW_TRIPPED_ACCEL
+          CalculateTimeSinceLastMeasurement();
           mpu.dmpGetQuaternion(&q, fifoBuffer);
           mpu.dmpGetAccel(&aa, fifoBuffer);
+          mpu.dmpGetGravity(&gravity, &q);
+          mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+          mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
           RunPrintBufferSM();
         #endif
 
         #ifdef OUTPUT_READABLE_WORLDACCEL
             // display initial world-frame acceleration, adjusted to remove gravity
             // and rotated based on known orientation from quaternion
-            mpu.dmpGetQuaternion(&q, fifoBuffer);
+//            mpu.dmpGetQuaternion(&q, fifoBuffer);
             mpu.dmpGetAccel(&aa, fifoBuffer);
+            Serial.println(millis());
+            /*
+//            mpu.dmpGetGyro(&gyro, fifoBuffer);
+            gyro.x = ((fifoBuffer[16] << 24) + (fifoBuffer[17] << 16) + (fifoBuffer[18] << 8) + fifoBuffer[19]);
+            gyro.y = ((fifoBuffer[20] << 24) + (fifoBuffer[21] << 16) + (fifoBuffer[22] << 8) + fifoBuffer[23]);
+            gyro.z = ((fifoBuffer[24] << 24) + (fifoBuffer[25] << 16) + (fifoBuffer[26] << 8) + fifoBuffer[27]);
             mpu.dmpGetGravity(&gravity, &q);
             mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
             mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+//            Serial.print((String)gyro.x + "\t"+(String)gyro.y + "\t"+(String)gyro.z + "\t");
+//            Serial.print("g:");
+            Serial.print(gyro.x); Serial.print("\t");
+            Serial.print(gyro.y); Serial.print("\t");
+            Serial.print(gyro.z); Serial.print("\t");
+//            Serial.print("aa:");
+//            Serial.print((String)aa.x + "\t"+(String)aa.y + "\t"+(String)aa.z + "\t");
+            Serial.print(aa.x); Serial.print("\t");
+            Serial.print(aa.y); Serial.print("\t");
+            Serial.print(aa.z); Serial.print("\t");
+//            Serial.print("q:");
+//            Serial.print((String)q.w + "\t"+(String)q.x + "\t"+(String)q.y + "\t"+(String)q.z + "\t");
+            Serial.print(q.w); Serial.print("\t");
+            Serial.print(q.x); Serial.print("\t");
+            Serial.print(q.y); Serial.print("\t");
+            Serial.print(q.z); Serial.print("\t");
+//            Serial.print("grav:");
+            Serial.print(gravity.x); Serial.print("\t");
+            Serial.print(gravity.y); Serial.print("\t");
+            Serial.print(gravity.z); Serial.print("\t");
+//            Serial.print("aaReal:");
+            Serial.print(aaReal.x); Serial.print("\t");
+            Serial.print(aaReal.y); Serial.print("\t");
+            Serial.print(aaReal.z); Serial.print("\t");    
+//            Serial.print("aaWorld:");      
+            Serial.print(aaWorld.x); Serial.print("\t");
+            Serial.print(aaWorld.y); Serial.print("\t");
+            Serial.print(aaWorld.z); Serial.print("\t");
+            Serial.println("");
               
               int accelXByte3= (aaWorld.x & 0xFFFFFF00) >> 24;
               int accelXByte2 = (aaWorld.x & 0xFFFF00) >> 16;
@@ -515,16 +565,17 @@ void loop() {
 //            Serial.print(aaWorld.y);
 //            Serial.print("\t");
 //            Serial.println(aaWorld.z);
-            if (SettlingTimeElapsed())
-            {
-              CalculateTimeSinceLastMeasurement();
-              GetLowPassFilteredValue(aaWorld);
-              SendAccelDataToOffsetFilter(aaWorldAfterLowPassFilter);
-              ConvertAccelFromADCToMetric();
-              UpdateVelocity();
-              PrintResults();
-            }
+//            if (SettlingTimeElapsed())
+//            {
+//              CalculateTimeSinceLastMeasurement();
+//              GetLowPassFilteredValue(aaWorld);
+//              SendAccelDataToOffsetFilter(aaWorldAfterLowPassFilter);
+//              ConvertAccelFromADCToMetric();
+//              UpdateVelocity();
+//              PrintResults();
+//            }
 //            Serial.write(accelPacket, 14);
+*/
         #endif
     
         #ifdef OUTPUT_TEAPOT
@@ -544,7 +595,7 @@ void loop() {
         // blink LED to indicate activity
         blinkState = !blinkState;
         digitalWrite(LED_PIN, blinkState);
-    }
+    
 }
 //
 //void SendAccelDataToOffsetFilter(VectorInt16 world_accel_before_offset)
@@ -831,6 +882,8 @@ void PrintIsAccelerating()
   Serial.print(is_moving.z);
   Serial.print(",");
 }
+
+*/
 void CalculateTimeSinceLastMeasurement() // in milliseconds
 {
   static unsigned long previous_time = millis();
@@ -839,6 +892,7 @@ void CalculateTimeSinceLastMeasurement() // in milliseconds
   previous_time = current_time;
 }
 
+/*
 void PrintElapsedTime()
 {
   Serial.print(elapsed_time);
@@ -863,49 +917,46 @@ void RunPrintBufferSM()
     case PROCESS_DATA_SM_START_STATE :
       start_print_buffer_timer = millis();
       ClearVectorInt16Buffer(accel_print_buffer, PRINT_DATA_BUFFER_SIZE);
-      UpdateVectorInt16Buffer(accel_print_buffer, aa, PRINT_DATA_BUFFER_SIZE);
-      ClearQuaternionBuffer(q_buffer, PRINT_DATA_BUFFER_SIZE);
-      UpdateQuaternionBuffer(q_buffer, q, PRINT_DATA_BUFFER_SIZE);
+      UpdateVectorInt16Buffer(accel_print_buffer, aaWorld, PRINT_DATA_BUFFER_SIZE);
       print_buffer_state = PROCESS_DATA_SM_RUNNING_STATE;
     break;
     
     case PROCESS_DATA_SM_RUNNING_STATE :
-      UpdateVectorInt16Buffer(accel_print_buffer, aa, PRINT_DATA_BUFFER_SIZE);
-      UpdateQuaternionBuffer(q_buffer, q, PRINT_DATA_BUFFER_SIZE);
+      UpdateVectorInt16Buffer(accel_print_buffer, aaWorld, PRINT_DATA_BUFFER_SIZE);
       print_buffer_timer = millis();
+      UpdateUnsignedLongBuffer(intervals, elapsed_time);
       if (print_buffer_timer > start_print_buffer_timer + PRINT_BUFFER_DURATION)
       {
-        ProcessAccelBuffer(accel_print_buffer, q_buffer, PRINT_DATA_BUFFER_SIZE);
+        ProcessAccelBuffer(accel_print_buffer, PRINT_DATA_BUFFER_SIZE);
+//        PrintIntervals(intervals, INTERVALS_BUFFER_LENGTH);
         print_buffer_state = PROCESS_DATA_SM_END_STATE ;
       }
     break;
     
     case PROCESS_DATA_SM_END_STATE:
-        Serial.print(aa.x); Serial.print(",");
-        Serial.print(aa.y); Serial.print(",");
-        Serial.print(aa.z); Serial.print(",");
-        if (abs(aa.x) > ACCEL_TRIP_VALUE | abs(aa.y) > ACCEL_TRIP_VALUE  | abs(aa.z) > ACCEL_TRIP_VALUE )
+//        Serial.print(aaWorld.x); Serial.print(",");
+//        Serial.print(aaWorld.y); Serial.print(",");
+//        Serial.print(aaWorld.z); Serial.print(",");
+        if (abs(aaWorld.x) > ACCEL_TRIP_VALUE | abs(aaWorld.y) > ACCEL_TRIP_VALUE  | abs(aaWorld.z) > ACCEL_TRIP_VALUE )
         {
-          Serial.println("tripped\r\n");
-//          print_buffer_state = PROCESS_DATA_SM_START_STATE;
+//          Serial.println("tripped\r\n");
+          print_buffer_state = PROCESS_DATA_SM_START_STATE;
         }
-        else { Serial.println("nope\r\n");}
+//        else { Serial.println("nope\r\n");}
     /*Process buffer*/
       break;
   }
 }
 
-void ProcessAccelBuffer(VectorInt16 raw_accel_buffer[], Quaternion q_buffer[], uint16_t array_size)
+void ProcessAccelBuffer(VectorInt16 accel_buffer[], uint16_t array_size)
 {
 //  PrintVectorInt16Buffer(raw_accel_buffer, PRINT_DATA_BUFFER_SIZE);
-  for (int i = 0; i < array_size; i++)
+  for (int i = array_size - 1; i > -1; i--)
   {
-    mpu.dmpGetGravity(&gravity, &(q_buffer[i]));
-    mpu.dmpGetLinearAccel(&aaReal, &(raw_accel_buffer[i]), &gravity);
-    mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &(q_buffer[i]));
-    Serial.print(aaWorld.x); Serial.print(",");
-    Serial.print(aaWorld.y); Serial.print(",");
-    Serial.print(aaWorld.z); Serial.print(",");
+    Serial.print(intervals[i]); Serial.print(",");
+    Serial.print(accel_buffer[i].x); Serial.print(",");
+    Serial.print(accel_buffer[i].y); Serial.print(",");
+    Serial.print(accel_buffer[i].z); Serial.print(",");
     Serial.print("\r\n");
   }
 }
@@ -919,6 +970,20 @@ void UpdateQuaternionBuffer(Quaternion buffer[], Quaternion new_val, uint16_t ar
 {
   ShiftQuaternionArrayForward(buffer, array_size);
   buffer[0] = new_val;
+}
+
+void UpdateUnsignedLongBuffer(unsigned long buffer[], unsigned long new_val)
+{
+  ShiftUnsignedLongArrayForward(buffer, INTERVALS_BUFFER_LENGTH);
+  buffer[0] = new_val;
+}
+
+void ShiftUnsignedLongArrayForward(unsigned long arr[], int array_size)
+{
+  for (int i = array_size - 1; i > 0; i--)
+  {
+    arr[i] = arr[i - 1];
+  }
 }
 
 void ShiftVectorInt16ArrayForward(VectorInt16 arr[], uint16_t array_size)
@@ -955,6 +1020,16 @@ void PrintVectorInt16Buffer(VectorInt16 buffer[], uint16_t size_of_array)
     }
 }
 
+void PrintIntervals(unsigned long buffer[], int array_size)
+{
+  Serial.print("in PrintIntervals\r\n");
+  for (int i = 0; i < INTERVALS_BUFFER_LENGTH; i++)
+  {
+    Serial.print("t: ");
+    Serial.print(intervals[i]);
+    Serial.println("\r\n");
+  }
+}
 void ClearVectorInt16Buffer(VectorInt16 buffer[], uint16_t size_of_array)
 {
     for (int i = 0; i < size_of_array; i++)
